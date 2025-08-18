@@ -1,4 +1,9 @@
 
-python step2_train_unet.py --step1_root "D:\Lab Summer Course\2025_0806_Anomaly_Detection\step1_synthesize\step1_outputs" --site SP3  --resize 128 128 --epochs 5 --batch_size 8 --base_channels 32 --experiment_dir step2_SP3_128
 
-python step2_train_unet.py --step1_root "D:\Lab Summer Course\2025_0806_Anomaly_Detection\step1_synthesize\step1_outputs" --site SP3  --resize 256 256 --epochs 50 --batch_size 8 --base_channels 32 --experiment_dir step2_SP3_128
+python step2_train_unet.py --step1_root "E:\Course\MasterFirst\SummerCourse\2025_0808_AnomalyDetection\Project\20250806AnomalyDetection\step1_synthesize\step1_outputs" --site SP3 --resize 256 256 --epochs 30 --batch_size 8 --base_channels 32 --experiment_dir step2_SP3_128_gpu
+
+
+
+
+
+python step2_eval_recon.py --ckpt "E:\Course\MasterFirst\SummerCourse\2025_0808_AnomalyDetection\Project\20250806AnomalyDetection\step2_unet\step2_SP3_128_gpu\checkpoints\unet_small_e30.pt" --data_root "E:\Course\MasterFirst\SummerCourse\2025_0808_AnomalyDetection\Project\20250806AnomalyDetection\20250806Dataset" --site SP3 --resize 256 256 --out_dir step2_SP3_128_gpu\eval --use_cuda

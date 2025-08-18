@@ -1,0 +1,15 @@
+{
+  "normal_mean": 0.006976515986025333,
+  "normal_std": 0.000295995210763067,
+  "defect_mean": 0.00805713515728712,
+  "defect_std": 0.001073551713488996,
+  "n_normal": 168,
+  "n_defect": 16,
+  "seconds": 4.4106764793396,
+  "resize": [
+    256,
+    256
+  ],
+  "device": "cuda",
+  "ckpt": "E:\\Course\\MasterFirst\\SummerCourse\\2025_0808_AnomalyDetection\\Project\\20250806AnomalyDetection\\step2_unet\\step2_SP3_128_gpu\\checkpoints\\unet_small_e30.pt"
+}

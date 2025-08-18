@@ -2,11 +2,8 @@
 # Single-file Step 2: train a compact U-Net to reconstruct clean images from synthetic defects.
 # Input  : step1 outputs (images/)
 # Target : step1 outputs (originals/)
-import os, torch
-os.environ["OMP_NUM_THREADS"] = "2"
-os.environ["MKL_NUM_THREADS"] = "2"
-torch.set_num_threads(2)
-torch.set_num_interop_threads(1)
+
+import os
 import argparse
 from pathlib import Path
 import time
@@ -18,6 +15,17 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms.functional as TF
+from torch.cuda.amp import autocast, GradScaler
+
+# ---------- (Optional) limit CPU threads if your machine runs hot ----------
+# Comment these out if your laptop is cool & you want max CPU throughput.
+os.environ.setdefault("OMP_NUM_THREADS", "2")
+os.environ.setdefault("MKL_NUM_THREADS", "2")
+try:
+    torch.set_num_threads(int(os.environ["OMP_NUM_THREADS"]))
+    torch.set_num_interop_threads(1)
+except Exception:
+    pass
 
 # ----------------------------
 # Dataset that reads Step-1 outputs
@@ -31,11 +39,11 @@ def _list_images(folder: Path):
     return sorted(files)
 
 class Step1Pairs(Dataset):
-    # """
-    # Pairs synthetic images (step1_dir/site/.../images/*.png)
-    # with clean originals (step1_dir/site/.../originals/*_src.png).
-    # Matching is by filename stem before the synthetic suffix `_sXXXX`.
-    # """
+    """
+    Pairs synthetic images (step1_site_dir/images/*.png)
+    with clean originals (step1_site_dir/originals/*_src.png).
+    Matching is by filename stem before the synthetic suffix `_sXXXX`.
+    """
     def __init__(self, step1_site_dir: Path, resize=(128,128)):
         self.step1_site_dir = Path(step1_site_dir)
         self.dir_images = self.step1_site_dir / "images"
@@ -62,7 +70,7 @@ class Step1Pairs(Dataset):
 
         if len(self.items) == 0:
             raise RuntimeError("No synthetic-original pairs matched. "
-                               "Check your step1 outputs structure and names.")
+                               "Check your Step-1 outputs structure and names.")
 
     def __len__(self):
         return len(self.items)
@@ -83,7 +91,7 @@ class Step1Pairs(Dataset):
 
 
 # ----------------------------
-# Compact U-Net (very small, CPU-friendly)
+# Compact U-Net (CPU/GPU friendly)
 # ----------------------------
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch):
@@ -139,23 +147,22 @@ class UNetSmall(nn.Module):
 
 
 # ----------------------------
-# Training
+# Save sample panels
 # ----------------------------
-def save_samples(net, batch, out_dir: Path, max_save=6):
+def save_samples(net, batch, out_dir: Path, max_save=6, device=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     net.eval()
-    x = batch["input"]
-    y = batch["target"]
+    x = batch["input"].to(device or "cpu")
+    y = batch["target"].to(device or "cpu")
     with torch.no_grad():
         yhat = net(x)
     # Save a few recon panels: input | recon | target horizontally
     to_pil = TF.to_pil_image
     n = min(x.size(0), max_save)
     for i in range(n):
-        inp   = to_pil(x[i].clamp(0,1))
-        recon = to_pil(yhat[i].clamp(0,1))
-        targ  = to_pil(y[i].clamp(0,1))
-        # simple horizontal concat
+        inp   = to_pil(x[i].detach().cpu().clamp(0,1))
+        recon = to_pil(yhat[i].detach().cpu().clamp(0,1))
+        targ  = to_pil(y[i].detach().cpu().clamp(0,1))
         w, h = inp.size
         panel = Image.new("RGB", (w*3, h))
         panel.paste(inp,   (0,   0))
@@ -163,6 +170,10 @@ def save_samples(net, batch, out_dir: Path, max_save=6):
         panel.paste(targ,  (w*2, 0))
         panel.save(out_dir / f"sample_{i:02d}.png")
 
+
+# ----------------------------
+# Training
+# ----------------------------
 def main():
     ap = argparse.ArgumentParser(description="Step 2: Train U-Net reconstructor on Step-1 synthetic pairs")
     ap.add_argument("--step1_site_dir", type=str, required=False,
@@ -189,32 +200,60 @@ def main():
         raise SystemExit("Provide either --step1_site_dir or (--step1_root and --site).")
 
     ds = Step1Pairs(site_dir, resize=tuple(args.resize))
-    dl = DataLoader(ds, batch_size=args.batch_size, shuffle=args.shuffle, num_workers=0)
 
-    device = torch.device("cpu")  # your machine; no CUDA
+    # ---- Device & DataLoader ----
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Using device:", device)
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        try:
+            torch.set_float32_matmul_precision("high")
+        except Exception:
+            pass
+
+    dl = DataLoader(
+        ds,
+        batch_size=args.batch_size,
+        shuffle=args.shuffle,
+        num_workers=0,  # On Windows, start with 0; you can try 2 if stable
+        pin_memory=(device.type == "cuda"),
+    )
+
+    # ---- Model / Optim / Loss / AMP ----
     net = UNetSmall(in_ch=3, out_ch=3, base=args.base_channels).to(device)
     opt = torch.optim.Adam(net.parameters(), lr=args.lr)
     l1  = nn.L1Loss()
+    scaler = GradScaler(enabled=(device.type == "cuda"))
 
+    # ---- Output dirs ----
     exp_dir = Path(args.experiment_dir)
     ckpt_dir = exp_dir / "checkpoints"
     samp_dir = exp_dir / "samples"
     exp_dir.mkdir(parents=True, exist_ok=True); ckpt_dir.mkdir(exist_ok=True); samp_dir.mkdir(exist_ok=True)
 
     print(f"Dataset size: {len(ds)} pairs  |  Image size: {args.resize[0]}x{args.resize[1]}")
-    print(f"Training on CPU: epochs={args.epochs}, bs={args.batch_size}, base_ch={args.base_channels}")
+    print(f"Training on {device.type.upper()}: epochs={args.epochs}, bs={args.batch_size}, base_ch={args.base_channels}")
 
+    # ---- Train ----
     for epoch in range(1, args.epochs+1):
         net.train()
         t0 = time.time()
         tot = 0.0; n = 0
         for batch in dl:
-            x = batch["input"].to(device)
-            y = batch["target"].to(device)
-            yhat = net(x)
-            loss = l1(yhat, y)
-            opt.zero_grad(); loss.backward(); opt.step()
+            x = batch["input"].to(device, non_blocking=True)
+            y = batch["target"].to(device, non_blocking=True)
+
+            opt.zero_grad(set_to_none=True)
+            with autocast(enabled=(device.type == "cuda")):
+                yhat = net(x)
+                loss = l1(yhat, y)
+
+            scaler.scale(loss).backward()
+            scaler.step(opt)
+            scaler.update()
+
             tot += loss.item() * x.size(0); n += x.size(0)
+
         dt = time.time() - t0
         avg = tot / max(1, n)
         print(f"Epoch {epoch:02d} | L1={avg:.4f} | {dt:.1f}s")
@@ -222,10 +261,12 @@ def main():
         # save ckpt + a few samples
         torch.save({"model": net.state_dict(),
                     "args": vars(args)}, ckpt_dir / f"unet_small_e{epoch}.pt")
+
         # grab a small fixed batch for preview
-        save_samples(net, next(iter(dl)), samp_dir / f"epoch_{epoch:02d}")
+        save_samples(net, next(iter(dl)), samp_dir / f"epoch_{epoch:02d}", device=device)
 
     print("Done. Check:", exp_dir.resolve())
+
 
 if __name__ == "__main__":
     # Reproducibility
