@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import List, Tuple
 import numpy as np
 from PIL import Image
-
+import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -94,11 +94,15 @@ class TrainPairs(Dataset):
     """
     def __init__(self, data_root: Path, step1_root: Path, site: str, resize=(256,256)):
         self.resize = resize
-        self.pos = list_images(Path(step1_root)/site/"images")
-        self.neg = list_images(Path(data_root)/site/"train"/"defect-free")
+        self.pos = list_images(Path(step1_root)/site/"images")            # label=1
+        self.neg = list_images(Path(data_root)/site/"train"/"defect-free")# label=0
         if len(self.pos)==0 or len(self.neg)==0:
             raise SystemExit("No training images found for positives or negatives.")
-        self.items = [(p,1) for p in self.pos] + [(n,0) for n in self.neg]
+        k = min(len(self.pos), len(self.neg))
+        random.seed(42)
+        self.items = [(p,1) for p in random.sample(self.pos, k)] + \
+                    [(n,0) for n in random.sample(self.neg, k)]
+        random.shuffle(self.items)
 
     def __len__(self): return len(self.items)
     def __getitem__(self, idx):
@@ -129,7 +133,8 @@ def make_pair_batch(x_rgb: torch.Tensor, netR: nn.Module, device="cpu") -> torch
     y = netR(x_rgb)              # recon
     xin = to_gray(x_rgb)
     yre = to_gray(y)
-    twoch = torch.cat([yre, xin], dim=1)
+    res = (xin - yre).abs() * 5.0   # amplify tiny differences; clamp below
+    twoch = torch.cat([res.clamp(0,1), xin], dim=1)
     return torch.clamp(twoch, 0.0, 1.0)
 
 # ---------------- ResNet18 with 2-channel stem ----------------
