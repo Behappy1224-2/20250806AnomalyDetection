@@ -1,4 +1,6 @@
-pillow 
-matplotlib 
+--index-url https://download.pytorch.org/whl/cu121
+pillow
+matplotlib
 numpy
-torch torchvision --index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
