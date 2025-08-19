@@ -1,1 +1,1 @@
-python step1_synthesize_no_gt.py --data_root "D:\Lab Summer Course\2025_0806_Anomaly_Detection\20250806Dataset" --site SP3 --resize 256 256 --num 168 --variants 1 --severity 0.6 --out_dir step1_outputs
+python step1_synthesize_no_gt.py --data_root "E:\Course\MasterFirst\SummerCourse\2025_0808_AnomalyDetection\Project\20250806AnomalyDetection\20250806Dataset" --site SP3 --resize 256 256 --n_per_image 1 --out_root "E:\Course\MasterFirst\SummerCourse\2025_0808_AnomalyDetection\Project\20250806AnomalyDetection\step1_synthesize\step1_outputs"

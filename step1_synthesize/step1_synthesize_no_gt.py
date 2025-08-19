@@ -1,168 +1,160 @@
-
-import argparse
+# step1_synthesize_no_gt.py
+# Micro-defects + mask outputs (originals/images/masks)
+import argparse, random, math
 from pathlib import Path
-import random
-from typing import List, Tuple
-
+from PIL import Image, ImageDraw, ImageFilter
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter, ImageChops
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
-EXTS = {".png",".jpg",".jpeg",".bmp",".tif",".tiff"}
+IMG_EXTS = (".png",".jpg",".jpeg",".bmp",".tif",".tiff")
 
-def list_images(folder: Path) -> List[Path]:
-    return sorted([p for p in folder.rglob("*") if p.suffix.lower() in EXTS])
+def list_images(folder: Path):
+    files = []
+    for e in IMG_EXTS: files += list(folder.glob(f"*{e}"))
+    return sorted(files)
 
-def mask_blobs(size: Tuple[int,int], num=(1,5), scale=(0.05,0.20)) -> Image.Image:
-    W,H = size
-    m = Image.new("L", (W,H), 0) #full black mask
-    dr = ImageDraw.Draw(m)
-    for _ in range(random.randint(*num)):
-        sx = int(random.uniform(*scale)*W) #eclipse x-axis 橢圓x軸長度
-        sy = int(random.uniform(*scale)*H) #eclipse y-axis
-        cx = random.randint(0, W-1); cy = random.randint(0, H-1) #eclipse center point(x,y)
-        dr.ellipse([cx-sx//2, cy-sy//2, cx+sx//2, cy+sy//2], fill=255) #draw eclipse with white
-    m = m.filter(ImageFilter.GaussianBlur(radius=1))
-    return m
+def blend_on(base: Image.Image, overlay: Image.Image, alpha: float):
+    return Image.blend(base, overlay, alpha)
 
-def mask_scratches(size: Tuple[int,int], num=(1,4), width=(1,5)) -> Image.Image:
-    W,H = size
-    m = Image.new("L", (W,H), 0)
-    dr = ImageDraw.Draw(m)
-    for _ in range(random.randint(*num)):
-        x0 = random.randint(0, W-1); y0 = random.randint(0, H-1)
-        x1 = random.randint(0, W-1); y1 = random.randint(0, H-1)
-        w  = random.randint(*width)
-        dr.line([x0,y0,x1,y1], fill=255, width=w)
-    m = m.filter(ImageFilter.GaussianBlur(radius=0.8))
-    return m
+# ---------- Drawing ops that ALSO paint a mask ----------
+def draw_hairline(img: Image.Image, msk: Image.Image, n_lines=1):
+    """very thin scratches (1-2 px), faint; paints white strokes on mask"""
+    im = img.copy(); mm = msk.copy()
+    d = ImageDraw.Draw(im); dm = ImageDraw.Draw(mm)
+    W,H = im.size
+    for _ in range(n_lines):
+        x1,y1 = random.randint(0,W-1), random.randint(0,H-1)
+        angle = random.uniform(0, math.pi)
+        L = random.randint(int(0.2*min(W,H)), int(0.6*min(W,H)))
+        x2 = int(x1 + L*math.cos(angle)); y2 = int(y1 + L*math.sin(angle))
+        color = random.randint(140,180) if random.random()<0.5 else random.randint(60,100)
+        w = random.choice([1,2])
+        d.line([(x1,y1),(x2,y2)], fill=(color, color, color), width=w)
+        dm.line([(x1,y1),(x2,y2)], fill=255, width=max(1,w))  # paint mask
+    im = im.filter(ImageFilter.GaussianBlur(radius=random.uniform(0.3,1.0)))
+    mm = mm.filter(ImageFilter.GaussianBlur(radius=0.6))
+    return im, mm
 
-def mask_rect_cutout(size: Tuple[int,int], num=(0,2), scale=(0.05,0.2)) -> Image.Image:
-    W,H = size
-    m = Image.new("L", (W,H), 0)
-    dr = ImageDraw.Draw(m)
-    for _ in range(random.randint(*num)):
-        sx = int(random.uniform(*scale)*W); sy = int(random.uniform(*scale)*H)
-        x0 = random.randint(0, max(0, W-sx)); y0 = random.randint(0, max(0, H-sy))
-        dr.rectangle([x0,y0,x0+sx,y0+sy], fill=255)
-    return m
+def draw_pin_dots(img: Image.Image, msk: Image.Image, n_dots=3):
+    """tiny dots (r=1-3 px); paints filled circles on mask"""
+    im = img.copy(); mm = msk.copy()
+    d = ImageDraw.Draw(im); dm = ImageDraw.Draw(mm)
+    W,H = im.size
+    for _ in range(n_dots):
+        r = random.randint(1,3)
+        cx, cy = random.randint(r, W-r-1), random.randint(r, H-r-1)
+        c = random.randint(30,70) if random.random()<0.7 else random.randint(180,220)
+        bbox = (cx-r, cy-r, cx+r, cy+r)
+        d.ellipse(bbox, fill=(c,c,c))
+        dm.ellipse(bbox, fill=255)
+    im = im.filter(ImageFilter.GaussianBlur(radius=random.uniform(0.2,0.8)))
+    mm = mm.filter(ImageFilter.GaussianBlur(radius=0.6))
+    return im, mm
 
-def apply_in_mask(img: Image.Image, mask: Image.Image, severity: float=0.6) -> Image.Image:
-    img = img.convert("RGB")
-    base = np.array(img).astype(np.float32)
+def draw_faint_streak(img: Image.Image, msk: Image.Image):
+    """narrow low-contrast streak (vertical or horizontal); paints bar on mask"""
+    im = img.copy(); mm = msk.copy()
+    d = ImageDraw.Draw(im); dm = ImageDraw.Draw(mm)
+    W,H = im.size
+    vertical = random.random()<0.5
+    if vertical:
+        x = random.randint(0, W-1)
+        w = random.choice([1,2,3])
+        c = random.randint(170,200) if random.random()<0.5 else random.randint(55,85)
+        rect = (x, 0, x+w, H)
+        d.rectangle(rect, fill=(c,c,c))
+        dm.rectangle(rect, fill=255)
+    else:
+        y = random.randint(0, H-1)
+        h = random.choice([1,2,3])
+        c = random.randint(170,200) if random.random()<0.5 else random.randint(55,85)
+        rect = (0, y, W, y+h)
+        d.rectangle(rect, fill=(c,c,c))
+        dm.rectangle(rect, fill=255)
+    im = im.filter(ImageFilter.GaussianBlur(radius=random.uniform(0.3,1.2)))
+    mm = mm.filter(ImageFilter.GaussianBlur(radius=0.6))
+    return im, mm
 
-    # print(np.array(mask.resize(img.size, Image.NEAREST)).shape)
-    # for i in (np.array(mask.resize(img.size, Image.NEAREST))):
-    #     print(i)
-    m = (np.array(mask.resize(img.size, Image.NEAREST)) > 127) 
-    # for i in m:
-    #     print(i)
-    modes_all = ["darken","noise","desaturate","brighten","blur"]
-    k = random.choice([1,2,3])
-    modes = random.sample(modes_all, k=k)
+def synth_micro_with_mask(base: Image.Image):
+    """
+    Compose 1-3 micro defects with tiny alpha, and build a binary mask showing coverage.
+    Returns: (synthetic_image_PIL, mask_PIL mode "L")
+    """
+    W,H = base.size
+    # start with identity overlays
+    over = base.copy()
+    mask = Image.new("L", (W,H), 0)
 
-    out = base.copy()
-    region = m
+    # choose ops (guarantee at least one)
+    ops = []
+    if random.random() < 0.9:
+        ops.append(lambda im,mm: draw_hairline(im, mm, n_lines=random.choice([1,1,2])))
+    if random.random() < 0.9:
+        ops.append(lambda im,mm: draw_pin_dots(im, mm, n_dots=random.choice([1,2,3,4])))
+    if random.random() < 0.7:
+        ops.append(lambda im,mm: draw_faint_streak(im, mm))
+    random.shuffle(ops)
+    if len(ops) == 0:
+        ops = [lambda im,mm: draw_pin_dots(im, mm, n_dots=random.choice([2,3]))]
 
-    if "darken" in modes:
-        out[region] *= (1.0 - 0.55*severity)
-    if "brighten" in modes:
-        out[region] += 50*severity
-    if "noise" in modes:
-        out[region] += np.random.normal(0, 25*severity, size=out[region].shape)
-    if "desaturate" in modes:
-        w = np.array([0.299,0.587,0.114], dtype=np.float32)
-        gray = (out[region]*w).sum(axis=1, keepdims=True)
-        mix = 0.6 + 0.4*severity
-        out[region] = mix*gray + (1-mix)*out[region]
-    out = np.clip(out, 0, 255)
+    # apply 1..3 ops onto over & mask
+    k = random.randint(1, min(3, len(ops)))
+    for f in ops[:k]:
+        over, mask = f(over, mask)
 
-    if "blur" in modes:
-        pil_blur = Image.fromarray(out.astype(np.uint8)).filter(ImageFilter.GaussianBlur(radius=max(1, int(2*severity))))
-        blur_np = np.array(pil_blur).astype(np.float32)
-        out[region] = blur_np[region]
+    # very low alpha to keep it subtle
+    alpha = random.uniform(0.15, 0.25)
+    out = blend_on(base, over, alpha)
 
-    return Image.fromarray(out.astype(np.uint8))
+    # optional light blur for realism
+    if random.random() < 0.4:
+        out = out.filter(ImageFilter.GaussianBlur(radius=0.3))
 
-def save_grid(triplets, out_png):
-    cols=3; rows=len(triplets)
-    fig, axes = plt.subplots(rows, cols, figsize=(cols*3.8, rows*3.2))
-    if rows==1:
-        axes = np.array([axes])
-    for r,(orig,mask,synt) in enumerate(triplets):
-        axes[r,0].imshow(orig); axes[r,0].set_axis_off(); axes[r,0].set_title("original")
-        axes[r,1].imshow(mask, cmap="gray"); axes[r,1].set_axis_off(); axes[r,1].set_title("mask")
-        axes[r,2].imshow(synt); axes[r,2].set_axis_off(); axes[r,2].set_title("synthetic")
-    fig.tight_layout(); fig.savefig(out_png, dpi=130); plt.close(fig)
+    # binarize/clip mask to {0,255}
+    m_np = np.array(mask, dtype=np.uint8)
+    m_np = (m_np > 10).astype(np.uint8) * 255
+    mask = Image.fromarray(m_np, mode="L")
+    return out, mask
 
 def main():
-    ap = argparse.ArgumentParser(description="Step 1: Create synthetic anomaly images (NO GroundTruth)")
-    ap.add_argument("--data_root", required=True, help="Path containing SP3/SP5")
-    ap.add_argument("--site", choices=["SP3","SP5"], default="SP3")
-    ap.add_argument("--out_dir", default="synthetic_data")
-    ap.add_argument("--resize", type=int, nargs=2, default=[256,256])
-    ap.add_argument("--num", type=int, required=True, help="How many normals image to Synthesize?")
-    ap.add_argument("--variants", type=int, default=1, help="Synthetic variants per base image")
-    ap.add_argument("--severity", type=float, default=0.6)
-    ap.add_argument("--seed", type=int, default=42)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--data_root", required=True, help="dataset root containing SP3/SP5")
+    ap.add_argument("--site", choices=["SP3","SP5"], required=True)
+    ap.add_argument("--resize", type=int, nargs=2, default=[256,256], help="H W")
+    ap.add_argument("--n_per_image", type=int, default=2, help="how many micro synthetics per normal image")
+    ap.add_argument("--out_root", required=True, help="step1_outputs root (existing one is fine)")
     args = ap.parse_args()
 
-    random.seed(args.seed); 
-    np.random.seed(args.seed)
+    site_root = Path(args.data_root)/args.site
+    src_dir = site_root/"train"/"defect-free"
+    imgs = []
+    for e in IMG_EXTS: imgs += list((src_dir).glob(f"*{e}"))
+    imgs = sorted(imgs)
+    if len(imgs)==0:
+        raise SystemExit("No train/defect-free images found.")
 
-    site_root = Path(args.data_root) / args.site
-    train_normals = site_root/'train'/'defect-free'
-    normals = list_images(train_normals)
-    print(len(normals))
-    if len(normals)==0:
-        print('No normal images under:', train_normals); return
+    out_site = Path(args.out_root)/args.site
+    dir_img = out_site/"images"; dir_org = out_site/"originals"; dir_msk = out_site/"masks"
+    dir_img.mkdir(parents=True, exist_ok=True)
+    dir_org.mkdir(parents=True, exist_ok=True)
+    dir_msk.mkdir(parents=True, exist_ok=True)
 
     H,W = args.resize
-    out_base = Path(args.out_dir)/args.site
-    out_img = out_base/'images'
-    out_mask = out_base/'masks'
-    out_src  = out_base/'originals'
-    for d in [out_img,out_mask,out_src]:
-        d.mkdir(parents=True, exist_ok=True)
+    counter = 0
+    for p in imgs:
+        orig = Image.open(p).convert("RGB").resize((W,H), Image.BILINEAR)
+        stem = p.stem
 
-    random.shuffle(normals)
-    normals = normals[:args.num]
+        # save original once per source
+        (dir_org/f"{stem}_src.png").parent.mkdir(parents=True, exist_ok=True)
+        orig.save(dir_org/f"{stem}_src.png")
 
-    preview = []
-    counter=0
-    for p in normals:
-        try:
-            base = Image.open(p).convert('RGB').resize((W,H), Image.BILINEAR)
-        except Exception as e:
-            print('Skip unreadable:', p, e); continue
-
-        for v in range(args.variants):
-            m = mask_blobs((W,H))
-            if random.random()<0.6:
-                m = ImageChops.lighter(m, mask_scratches((W,H)))
-            if random.random()<0.3:
-                m = ImageChops.lighter(m, mask_rect_cutout((W,H)))
-
-            synt = apply_in_mask(base, m, severity=args.severity)
-
-            stem = Path(p).stem
-            base.save(out_src/f"{stem}_src.png")
-            synt.save(out_img/f"{stem}_s{counter:04d}.png")
-            m.save(out_mask/f"{stem}_s{counter:04d}_mask.png")
-
-            # if len(preview)<8:
-            #     preview.append((base, m, synt))
-
+        for _ in range(args.n_per_image):
+            syn, m = synth_micro_with_mask(orig)
+            syn.save(dir_img/f"{stem}_sM{counter:05d}.png")
+            m.save(dir_msk/f"{stem}_sM{counter:05d}_mask.png")
             counter += 1
 
-    # grid = out_base/'step1_preview.png'
-    # if preview:
-    #     save_grid(preview, grid)
-    #     print('Preview saved:', grid.resolve())
+    print(f"Done. Wrote {counter} micro synthetics with masks to {out_site}.")
 
-    print('Done. Wrote:', counter, 'synthetic images to', out_img.resolve())
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
