@@ -23,6 +23,19 @@ import torchvision.transforms.functional as TF
 from torchvision.models import resnet18
 import matplotlib.pyplot as plt
 
+import random
+
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic =True
+    torch.backends.cudnn.benchmark = False
+
+
+
 # ---------------- UNet (same as step2) ----------------
 class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch):
@@ -218,6 +231,7 @@ def plot_confusion(cm: np.ndarray, labels: Tuple[str,str], out_path: Path):
 
 # ---------------- Main ----------------
 def main():
+    set_seed(42)
     ap = argparse.ArgumentParser(description="Step 3: 2-ch ResNet on [recon_gray, input_gray]")
     ap.add_argument("--data_root", required=True)
     ap.add_argument("--step1_root", required=True)
